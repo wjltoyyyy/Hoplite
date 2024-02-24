@@ -1,181 +1,148 @@
-# Reproducing Hoplite Microbenchmarks on AWS
+# Setup AWS Cluster for Hoplite Microbenchmarks on AWS.
 
-_(About 210 min)_
+## Setup Local Environment _(About 2 min)_
 
-## Cluster Setup
+On your local machine, make sure Python (>=3.6) is installed on the local machine. Then install Ray version `1.3` and boto with:
 
-_(About 30 min)_
+~~~bash
+pip install ray==1.3 boto3  # if failed, use "pip -V" to check if you are using python3
+~~~
 
-If you are provided with an AWS IAM account & pre-built binaries
-* If you just want to review figures & raw experimental data, see [cluster-config-access-results-only](cluster-config-access-results-only).
-* If you also want to reproduce all results from the beginning, see [cluster-config-with-ami](cluster-config-with-ami) for setting up a cluster.
+## Start the Cluster _(About 3 min)_
 
-If you are not provided with an AWS account or you want to build everything from scratch, see [cluster-config](cluster-config).
+Start the cluster and connect to the head node via:
 
-## Roundtrip Microbenchmarks (Figure 6 at Section 5.1)
+~~~bash
+export AWS_ACCESS_KEY_ID="Your Access Key ID"
+export AWS_SECRET_ACCESS_KEY="Your Secret Acess Key"
+ray up example.yaml
+ray attach example.yaml
+~~~
 
-_(About 15 min)_
+Visit the directory with pre-built binaries via `cd ~/efs/hoplite`
 
-We assume your working directory is the directory of the current README file. Here is how you benchmark Hoplite and baselines:
+Remember to take down the cluster using `ray down example.yaml` on the local machine after evaluation.
 
-### Hoplite _(about 2 min)_
+# Setup AWS Cluster for Hoplite Microbenchmarks on AWS.
 
-```bash
-pushd hoplite-python
-for i in `seq 5`; do
-./run_test.sh roundtrip 2 $[2**10]
-./run_test.sh roundtrip 2 $[2**20]
-./run_test.sh roundtrip 2 $[2**30]
-done
-python parse_roundtrip_result.py --verbose
-popd
-```
+## Setup Local Environment _(About 10 min)_
 
-Results are saved in `hoplite-roundtrip.csv`.
+ First, on your local machine:
 
-### OpenMPI _(about 2 min)_
+1. Make sure Python 3 is installed on the local machine. Then install Ray version `1.3` and boto with:
+   ~~~bash
+   pip install ray==1.3 boto3
+   ~~~
+2. Configure your AWS credentials (`aws_access_key_id` and `aws_secret_access_key`) in `~/.aws/credentials` as described [here](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html#guide-credentials). Your `~/.aws/credentials` should look like the following:
+   ~~~
+   [default]
+   aws_access_key_id=XXXXXXXX
+   aws_secret_access_key=YYYYYYYY
+   ~~~
+   Change the permission of this file:
+   ~~~bash
+   chmod 600 ~/.aws/credentials
+   ~~~
 
-```bash
-pushd mpi-cpp
-for i in `seq 5`; do
-./run_test.sh roundtrip 2 $[2**10]
-./run_test.sh roundtrip 2 $[2**20]
-./run_test.sh roundtrip 2 $[2**30]
-done
-python parse_roundtrip_result.py --verbose
-popd
-```
-
-Results are saved in `mpi-roundtrip.csv`.
-
-### Dask _(about 5 min)_
-
-```bash
-pushd dask-python
-./dask_roundtrip.sh  # => dask-roundtrip.csv
-popd
-```
-
-Results are saved in `dask-roundtrip.csv`.
+## Spin up AMI _(About 5 min)_
 
 
-### Ray _(about 2 min)_
+Start an AWS node with `initial.yaml` and connect to the node:
+   ~~~bash
+   ray up initial.yaml
+   ray attach initial.yaml # ssh into the AWS instance
+   ~~~
 
-```bash
-pushd ray-python
-python ray_roundtrip.py  # => ray-roundtrip.csv
-popd
-```
+## Setup EFS _(About 10 min)_
 
-Results are saved in `ray-roundtrip.csv`.
+Some experiments require a shared files system for proper logging. Here use AWS EFS.
 
+1. Create an [EFS](https://console.aws.amazon.com/efs) on region `us-east-1`. This is used as an NFS for all nodes in the cluster.
+2. Check your created EFS on [https://console.aws.amazon.com/efs/home?region=us-east-1#/file-systems/](https://console.aws.amazon.com/efs/home?region=us-east-1#/file-systems/). You can see the EFS File system ID ("fs-********") on the page.
+3. Please add the security group ID of the node you just started (can be found on the AWS Management Console) to the EFS to make sure your node can access the EFS (link to manage EFS network access: https://console.aws.amazon.com/efs/home?region=us-east-1#/file-systems/{Your EFS file system ID}/network-access).
 
-### Merge results _(about 1 min)_
+## Setup AMI _(About 20 min)_
 
-After generating all results, we can merge them into a single file:
+You should have sshed into an AWS instance now, the following commands are executed on the AWS instance:
 
-```bash
-echo "Method,Object Size (in bytes),Average RTT (s),Std RTT (s)" > roundtrip-results.csv
-cat */*-roundtrip.csv >> roundtrip-results.csv
-```
+0. Install the [efs-utils](https://docs.aws.amazon.com/efs/latest/ug/installing-other-distro.html) to mount the EFS on the node:
+   ~~~bash
+   git clone https://github.com/aws/efs-utils
+   cd efs-utils
+   ./build-deb.sh
+   sudo apt-get -y install ./build/amazon-efs-utils*deb
+   ~~~
+   It is normal to see
+   ~~~
+   E: Could not get lock /var/lib/dpkg/lock-frontend - open (11: Resource temporarily unavailable)
+   E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?
+   ~~~
+   when installing the package. This means the machine is still booting up and installing packages, you need to wait until the package manager is ready (usually 2-4 min) and install again.
 
-All results are saved in `roundtrip-results.csv`.
+   Then mount the EFS on the node by:
+   ~~~bash
+   mkdir -p ~/efs
+   sudo mount -t efs {Your EFS file system ID}:/ ~/efs
+   sudo chmod 777 ~/efs
+   ~~~
+   If this takes forever or connection timeout, make sure you configure the sercurity groups right.
+1. Install dependancies, clone Hoplite, and then compile Hoplite:
+   ~~~bash
+   # You **must** the repo under EFS.
+   cd ~/efs && git clone https://github.com/suquark/hoplite.git
+   cd hoplite
+   ./install_dependencies.sh
+   mkdir build
+   cd build
+   cmake -DCMAKE_BUILD_TYPE=Release ..
+   make -j
+   ~~~
+   Note that Hoplite should be compiled before activating conda environment, otherwise the Protobuf library in the conda environment will cause compilation errors.
+2. Activate conda environment:
+   ~~~bash
+   conda activate
+   echo "conda activate" >> ~/.bashrc
+   ~~~
+3. Install python libraries:
+   ~~~bash
+   pip install 'ray[all]==1.3' 'ray[serve]==1.3' torchvision==0.8.2 mpi4py efficientnet_pytorch
+   ~~~
+4. Install Hoplite Python library:
+   ~~~bash
+   cd ~/efs/hoplite
+   pip install -e python
+   cp build/notification python/hoplite/
+   ./python/setup.sh
+   ~~~
+5. Config ssh for MPI:
+   ~~~bash
+   echo -e "Host *\n    StrictHostKeyChecking no" >> ~/.ssh/config
+   sudo chmod 400 ~/.ssh/config
+   ~~~
+6. Setup ssh key:
+   ~~~bash
+   ssh-keygen
+   cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+   ~~~
+7. Create an AMI on [AWS console](aws.amazon.com/console). See EC2 -> Instances -> Actions -> Image and templates -> Create image. Set the image name (e.g. `hoplite-artifact-ami`) and then create image.
+8. Go to AMIs tab on AWS console. When the AMI is ready, turn off the instance via:
+   ~~~bash
+   ray down initial.yaml
+   ~~~
 
-### Plot Figures _(about 2 min)_
+## Start the Cluster _(About 10 min)_
 
-After merging all results, we provide a script to visualize them.
+1. Create a [placement group](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html) on the AWS Management Console. See EC2 -> Placement Groups. Choose the `Cluster` placement strategy. This can make sure the interconnection bandwidth among different nodes in the cluster are high.
+2. Replace the `{image-id}` in `cluster.yaml` with the AMI-id you just created and `{group-name}` with the placement group name you just created.
+3. Replace `{efs-id}` with your [EFS file system ID](https://console.aws.amazon.com/efs/home?region=us-east-1).
+4. Replace `SecurityGroupIds` with the security ID created by `initial.yaml`.
+5. Start the cluster and connect to the head node via:
+   ~~~bash
+   ray up cluster.yaml
+   ray attach cluster.yaml
+   ~~~
+   If the node fails to connect to EFS (or the cluster takes forever to spin up), check if the security group ID in EFS as mentioned earlier.
 
-We assume your working directory is the directory of the current README file. Here is how you generate figures in the paper:
+If everything is ok, take down the cluster using `ray down cluster.yaml` and remember to save your `cluster.yaml`.
 
-```bash
-python plot_rtt.py
-```
-
-This script generates three PDF files under the working directory. `RTT1K.pdf` corresponds to Figure 6 (a), `RTT1M.pdf` corresponds to Figure 6 (b), and `RTT1G.pdf` corresponds to Figure 6 (c).
-
-You can download PDF files to your local machine using Ray cluster utils, for example:
-
-```bash
-ray rsync-down cluster.yaml /home/ubuntu/efs/hoplite/microbenchmarks/RTT1K.pdf .
-```
-
-
-## Collective Communication Microbenchmarks (Figure 7 at Section 5.1, Figure 13 at Appendix A)
-
-_(About 180 min)_
-
-We assume your working directory is the directory of the current README file. Here is how you benchmark Hoplite and baselines:
-
-### OpenMPI _(about 30 min)_
-
-```bash
-pushd mpi-cpp
-./auto_test.sh
-python parse_result.py --verbose
-popd
-```
-
-Results are saved in `mpi_results.csv`.
-
-### Hoplite _(about 15 min)_
-
-```bash
-pushd hoplite-cpp
-./auto_test.sh
-python parse_result.py --verbose
-popd
-```
-
-Results are saved in `hoplite_results.csv`.
-
-### Gloo _(about 20 min)_
-
-```bash
-pushd gloo-cpp
-./install_gloo.sh
-./auto_test.sh
-python parse_result.py --verbose
-popd
-```
-
-Results are saved in `gloo_results.csv`.
-
-### Ray _(about 25 min)_
-
-```bash
-pushd ray-python
-make
-./auto_test.sh
-popd
-```
-
-Results are saved in `ray-microbenchmark.csv`.
-
-### Dask _(about 80 min)_
-
-```bash
-pushd dask-python
-./auto_test.sh
-python parse_result.py --verbose
-popd
-```
-
-Results are saved in `dask_results.csv`.
-
-### Plot Figures _(about 2 min)_
-
-After generating all results, we provide a script to visualize them.
-
-We assume your working directory is the directory of the current README file. Here is how you generate figures in the paper:
-
-```bash
-python draw_collective_communication.py
-```
-
-This script generates two PDF files under the working directory. `microbenchmarks-large.pdf` corresponds to Figure 7 at Section 5.1, and `microbenchmarks-small.pdf` corresponds to Figure 13 at Appendix A.
-
-You can download PDF files to your local machine using Ray cluster utils, for example:
-
-```bash
-ray rsync-down cluster.yaml /home/ubuntu/efs/hoplite/microbenchmarks/microbenchmarks-large.pdf .
-```
+Here is an [example](example.yaml) of configured cluster file.

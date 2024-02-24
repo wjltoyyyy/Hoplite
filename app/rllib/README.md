@@ -23,8 +23,6 @@ If you already have access to the cluster and AMI, see [README-with-ami](README-
 
 ## Setup AMI _(About 20 min)_
 
-Please contact Zhuohan Li (zhuohan@berkeley.edu) for configured AMI. See following for the instructions to setup the cluster from scratch:
-
 Start an AWS node with `initial.yaml` and connect to the node:
    ~~~bash
    ray up initial.yaml
